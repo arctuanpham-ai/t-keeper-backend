@@ -14,6 +14,7 @@ from models import (
 )
 from services.scanner import scan_market, fetch_stock_data, process_single_stock
 from services.ai_advisor import generate_trading_plan, analyze_chart_image
+from services.t5_audit_report import generate_t5_audit_report
 from config import API_HOST, API_PORT
 
 
@@ -124,6 +125,69 @@ async def get_stock_detail(symbol: str):
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== T+5 AUDIT REPORT ENDPOINT ====================
+
+@app.get("/api/v1/audit/t5-report/{symbol}")
+async def get_t5_audit_report(symbol: str):
+    """
+    Sinh Báo Cáo Thẩm Định Đầu Tư T+5 đa chiều
+    """
+    try:
+        # 1. Thu thập dữ liệu real-time và lịch sử
+        # fetch_stock_data returns dict: {'df': df, 'latest': dict, 'symbol': str}
+        data_bundle = fetch_stock_data(symbol.upper(), days=60)
+        
+        if data_bundle is None or 'df' not in data_bundle:
+            # Fallback to simple processing if direct fetch fails
+            stock_info = process_single_stock(symbol.upper())
+            if not stock_info:
+                raise HTTPException(status_code=404, detail=f"Không tìm thấy dữ liệu cho mã {symbol}")
+            
+            price = stock_info.price
+            volume = stock_info.volume or 0
+            rsi = stock_info.indicators.rsi if stock_info.indicators else None
+            ma20 = stock_info.indicators.ma20 if stock_info.indicators else None
+            historical_df = None
+        else:
+            # Use data from bundle
+            df = data_bundle['df']
+            latest = data_bundle['latest']
+            price = float(latest.get('close', 0))
+            volume = int(latest.get('volume', 0))
+            historical_df = df
+            
+            # Use calculated indicators if possible
+            rsi = None
+            ma20 = None
+            if len(df) >= 20:
+                ma20 = float(df['close'].tail(20).mean())
+            
+            # Simple RSI logic if we wanted to calculate it here, 
+            # but generate_t5_audit_report handles None
+        
+        # 2. Xác định xem có phải Bank không
+        banking_codes = ["VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "HDB", "STB", "LPB", "SHB", "VIB", "TPB", "MSB", "OCB"]
+        is_banking = symbol.upper() in banking_codes
+        
+        # 3. Gọi module phân tích 4 lớp
+        report = generate_t5_audit_report(
+            symbol=symbol.upper(),
+            price=price,
+            volume=volume,
+            rsi=rsi,
+            ma20=ma20,
+            is_banking=is_banking,
+            historical_df=historical_df
+        )
+        
+        return report
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
