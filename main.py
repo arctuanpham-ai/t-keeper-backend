@@ -8,9 +8,10 @@ from contextlib import asynccontextmanager
 import uvicorn
 
 from models import (
-    ScannerRequest, ScannerResponse,
-    DeepDiveRequest, TradingPlan,
-    VisionAdvisorRequest, VisionAdvisorResponse
+    StockData, ScannerResponse, ScannerRequest, 
+    TradingPlan, DeepDiveRequest,
+    VisionAdvisorRequest, VisionAdvisorResponse,
+    PortfolioAuditRequest, PortfolioAuditResponse
 )
 from services.scanner import scan_market, fetch_stock_data, process_single_stock
 from services.ai_advisor import generate_trading_plan, analyze_chart_image
@@ -131,9 +132,10 @@ async def get_stock_detail(symbol: str):
 # ==================== T+5 AUDIT REPORT ENDPOINT ====================
 
 @app.get("/api/v1/audit/t5-report/{symbol}")
-async def get_t5_audit_report(symbol: str):
+def get_t5_audit_report(symbol: str):
     """
     Sinh Báo Cáo Thẩm Định Đầu Tư T+5 đa chiều
+    Run synchronously to avoid blocking event loop during data fetch
     """
     try:
         # 1. Thu thập dữ liệu real-time và lịch sử
@@ -201,8 +203,10 @@ async def deep_dive_analysis(request: DeepDiveRequest):
     Gửi dữ liệu lịch sử 30 phiên cho Gemini Pro để phân tích
     """
     try:
-        # Get stock data if not provided
-        stock_data = fetch_stock_data(request.symbol.upper(), days=60)
+        # Get stock data if not provided (Run in threadpool to avoid blocking)
+        from fastapi.concurrency import run_in_threadpool
+        stock_data = await run_in_threadpool(fetch_stock_data, request.symbol.upper(), 60)
+        
         if stock_data is None:
             raise HTTPException(status_code=404, detail=f"Không tìm thấy dữ liệu cho mã {request.symbol}")
         
@@ -231,6 +235,41 @@ async def deep_dive_analysis(request: DeepDiveRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/advisor/portfolio-audit", response_model=PortfolioAuditResponse)
+async def audit_portfolio(request: PortfolioAuditRequest):
+    """
+    Portfolio Guardian - Tư vấn quản trị rủi ro danh mục
+    """
+    try:
+        # 1. Fetch Realtime Price
+        from fastapi.concurrency import run_in_threadpool
+        # Run sync fetch in threadpool
+        stock_data = await run_in_threadpool(fetch_stock_data, request.symbol.upper(), 5)
+        
+        current_price = request.entry_price # Fallback
+        rsi = None
+        
+        if stock_data and 'latest' in stock_data:
+            current_price = float(stock_data['latest'].get('close', request.entry_price))
+            # Calculate RSI if possible or get from indicators
+            if stock_data.get('df') is not None and not stock_data['df'].empty:
+                 from services.indicators import calculate_rsi
+                 # Recalculate RSI just to be sure
+                 rsi_series = calculate_rsi(stock_data['df']['close'])
+                 if not rsi_series.empty:
+                     rsi = rsi_series.iloc[-1]
+
+        # 2. Call Advisor Logic
+        from services.portfolio_advisor import audit_portfolio_item
+        result = await audit_portfolio_item(request, current_price, rsi)
+        
+        return result
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/advisor/vision", response_model=VisionAdvisorResponse)
 async def vision_advisor(request: VisionAdvisorRequest):
@@ -250,6 +289,7 @@ async def vision_advisor(request: VisionAdvisorRequest):
 
 
 # ==================== RUN SERVER ====================
+
 
 if __name__ == "__main__":
     uvicorn.run(

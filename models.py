@@ -113,3 +113,21 @@ class VisionAdvisorResponse(BaseModel):
     confidence: str
     reasoning: str
     generated_at: datetime = Field(default_factory=datetime.now)
+
+
+class PortfolioAuditRequest(BaseModel):
+    """Request for Portfolio Advice"""
+    symbol: str
+    entry_price: float
+    entry_date: datetime # ISO format
+    volume: int = 0
+    image_base64: Optional[str] = None # Optional chart image
+
+
+class PortfolioAuditResponse(BaseModel):
+    """Advice from Portfolio Guardian"""
+    symbol: str
+    decision: str  # BÁN / GIỮ / CHỐT LỜI
+    advice_content: str  # Markdown content
+    timestamp: datetime = Field(default_factory=datetime.now)
+

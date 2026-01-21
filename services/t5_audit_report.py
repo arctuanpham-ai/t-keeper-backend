@@ -1,538 +1,252 @@
 """
 T+5 Deep-Dive Investment Report Module
 ======================================
-Senior Quant Developer & AI Data Scientist Module
-
-Mục tiêu: Tính toán xác suất thành công (%) của kịch bản T+5
-dựa trên dữ liệu đa chiều thay vì cảm tính.
-
-4 Lớp phân tích:
-- Layer 1: Technical & "10/10 Framework" Compliance
-- Layer 2: Market Sentiment Analysis (NLP)
-- Layer 3: Macro Context Check
-- Layer 4: Historical Pattern Matching (Cosine Similarity)
+Refactored to implement "Quick T+5 Report" based on Price Action & 60-session Backtest.
 """
 
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List
-import random
+from datetime import datetime
+from typing import Dict, Any, Optional
 
-# Try importing advanced libraries, fallback to simple implementations
-try:
-    from sklearn.metrics.pairwise import cosine_similarity
-    HAS_SKLEARN = True
-except ImportError:
-    HAS_SKLEARN = False
+# --- HÀM BỔ TRỢ: TÍNH RSI (Dùng Pandas) ---
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
-try:
-    import ta
-    HAS_TA = True
-except ImportError:
-    HAS_TA = False
-
-
-# ============================================
-# LAYER 1: Technical Analysis & 10/10 Framework
-# ============================================
-
-def analyze_technical_layer(
-    price: float,
-    volume: int,
-    rsi: Optional[float],
-    ma20: Optional[float],
-    ma50: Optional[float],
-    is_banking: bool = False
-) -> Dict[str, Any]:
-    """
-    Kiểm tra các tiêu chí cứng theo 10/10 Framework:
-    - Giá < 35k (nếu Bank), Vol > 1.5tr, RSI < 70, Trên MA20
-    
-    Returns:
-        Dict với trạng thái Pass/Fail và điểm số
-    """
-    checks = {}
-    score = 0
-    max_score = 4
-    
-    # Check 1: Price Range (cho Banking)
-    if is_banking:
-        checks["check_price"] = "Đạt" if price < 35000 else "Không đạt"
-        if price < 35000:
-            score += 1
-    else:
-        checks["check_price"] = "N/A (Không phải Bank)"
-        score += 1  # Non-bank không cần check này
-    
-    # Check 2: Volume > 1.5M
-    vol_threshold = 1_500_000
-    checks["check_vol"] = "Đạt" if volume >= vol_threshold else "Không đạt"
-    if volume >= vol_threshold:
-        score += 1
-    
-    # Check 3: RSI < 70 (Tránh vùng quá mua)
-    if rsi is not None:
-        if rsi < 30:
-            checks["check_rsi"] = "Quá bán (Cơ hội)"
-            score += 1
-        elif rsi < 70:
-            checks["check_rsi"] = "An toàn"
-            score += 1
-        else:
-            checks["check_rsi"] = "Rủi ro (Quá mua)"
-    else:
-        checks["check_rsi"] = "Không có dữ liệu"
-        score += 0.5  # Neutral
-    
-    # Check 4: Giá trên MA20
-    if ma20 is not None and price > 0:
-        if price > ma20:
-            checks["check_trend"] = "Tăng (Trên MA20)"
-            score += 1
-        else:
-            checks["check_trend"] = "Giảm/Tích lũy (Dưới MA20)"
-    else:
-        checks["check_trend"] = "Không có dữ liệu MA20"
-        score += 0.5
-    
-    # Overall status
-    pass_rate = (score / max_score) * 100
-    status = "PASS" if pass_rate >= 75 else "FAIL"
-    
-    return {
-        "status": status,
-        "pass_rate": round(pass_rate, 1),
-        "score": round(score, 1),
-        "max_score": max_score,
-        "checks": checks
-    }
-
-
-# ============================================
-# LAYER 2: Market Sentiment Analysis (NLP)
-# ============================================
-
-def analyze_sentiment_layer(symbol: str) -> Dict[str, Any]:
-    """
-    Phân tích tâm lý thị trường từ tin tức/mạng xã hội
-    Sử dụng NLP đơn giản: Positive/Negative/Neutral
-    
-    TODO: Integrate real news API (CafeF, VnExpress, etc.)
-    Currently uses simulated sentiment based on symbol patterns
-    
-    Returns:
-        Dict với điểm tâm lý (0-100) và trend
-    """
-    # Simulated sentiment keywords mapping
-    positive_keywords = ["tăng mạnh", "đột phá", "kỷ lục", "mua ròng", "triển vọng", 
-                        "khuyến nghị mua", "outperform", "bullish"]
-    negative_keywords = ["giảm sàn", "bán tháo", "cảnh báo", "rủi ro", "sell",
-                        "underperform", "bearish", "thua lỗ"]
-    
-    # Simulate news analysis (In production, crawl real news)
-    # Score based on symbol's typical sector behavior
-    banking_stocks = ["VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "HDB"]
-    hot_stocks = ["HPG", "MSN", "VNM", "FPT", "MWG", "VHM", "VIC"]
-    
-    base_score = 50
-    
-    if symbol in banking_stocks:
-        # Banking often stable
-        sentiment_score = base_score + random.randint(-10, 20)
-        trend = "Trung lập - Ổn định"
-    elif symbol in hot_stocks:
-        # Hot stocks more volatile
-        sentiment_score = base_score + random.randint(-20, 30)
-        trend = "Biến động theo tin tức"
-    else:
-        sentiment_score = base_score + random.randint(-15, 15)
-        trend = "Trung lập"
-    
-    # Clamp to 0-100
-    sentiment_score = max(0, min(100, sentiment_score))
-    
-    # Determine sentiment label
-    if sentiment_score >= 70:
-        label = "Hưng phấn (Bullish)"
-    elif sentiment_score >= 50:
-        label = "Trung lập (Neutral)"
-    elif sentiment_score >= 30:
-        label = "Thận trọng (Cautious)"
-    else:
-        label = "Sợ hãi (Fear)"
-    
-    # Simulated news count
-    news_count = random.randint(5, 25)
-    
-    return {
-        "score": sentiment_score,
-        "label": label,
-        "trend": trend,
-        "news_analyzed": news_count,
-        "source": "Simulated (Cần tích hợp News API thực)"
-    }
-
-
-# ============================================
-# LAYER 3: Macro Context Check
-# ============================================
-
-def analyze_macro_layer() -> Dict[str, Any]:
-    """
-    Đánh giá bối cảnh vĩ mô:
-    - Tỷ giá USD/VND
-    - Lãi suất liên ngân hàng
-    
-    TODO: Integrate real macro data APIs
-    Currently uses simulated/cached data
-    
-    Returns:
-        Dict với đánh giá Hỗ trợ/Cản trở và điểm số
-    """
-    # Simulated macro indicators (In production, fetch from SBV, Bloomberg, etc.)
-    # Real values would be fetched from API
-    
-    # USD/VND exchange rate trend
-    usd_vnd_current = 25450  # Simulated
-    usd_vnd_1w_ago = 25380   # Simulated
-    usd_change_pct = ((usd_vnd_current - usd_vnd_1w_ago) / usd_vnd_1w_ago) * 100
-    
-    # Interbank interest rate
-    interbank_rate = 4.5  # Simulated %
-    interbank_1w_ago = 4.3
-    rate_change = interbank_rate - interbank_1w_ago
-    
-    # Calculate macro score
-    macro_score = 50
-    impacts = []
-    
-    # USD/VND impact
-    if usd_change_pct > 1:
-        macro_score -= 15
-        impacts.append(f"⚠️ Tỷ giá tăng {usd_change_pct:.2f}% (Tiêu cực)")
-    elif usd_change_pct < -1:
-        macro_score += 10
-        impacts.append(f"✅ Tỷ giá giảm {abs(usd_change_pct):.2f}% (Tích cực)")
-    else:
-        impacts.append("➡️ Tỷ giá ổn định")
-    
-    # Interest rate impact
-    if rate_change > 0.5:
-        macro_score -= 20
-        impacts.append(f"⚠️ Lãi suất tăng {rate_change:.2f}pp (Tiêu cực)")
-    elif rate_change < -0.5:
-        macro_score += 15
-        impacts.append(f"✅ Lãi suất giảm {abs(rate_change):.2f}pp (Tích cực)")
-    else:
-        impacts.append("➡️ Lãi suất ổn định")
-    
-    # Overall assessment
-    if macro_score >= 60:
-        assessment = "Hỗ trợ"
-        label = "Môi trường vĩ mô thuận lợi"
-    elif macro_score >= 40:
-        assessment = "Trung lập"
-        label = "Không có tác động đáng kể"
-    else:
-        assessment = "Cản trở"
-        label = "Môi trường vĩ mô bất lợi"
-    
-    return {
-        "score": max(0, min(100, macro_score)),
-        "assessment": assessment,
-        "label": label,
-        "usd_vnd": usd_vnd_current,
-        "usd_change_pct": round(usd_change_pct, 2),
-        "interbank_rate": interbank_rate,
-        "rate_change": round(rate_change, 2),
-        "impacts": impacts
-    }
-
-
-# ============================================
-# LAYER 4: Historical Pattern Matching
-# ============================================
-
-def analyze_pattern_matching(
-    symbol: str,
-    current_data: Dict[str, Any],
-    historical_df: Optional[pd.DataFrame] = None
-) -> Dict[str, Any]:
-    """
-    Thuật toán: Sử dụng Cosine Similarity để quét lại lịch sử 5 năm.
-    
-    Nhiệm vụ:
-    - Tìm 10 thời điểm tương đồng > 85% với cấu trúc nến + Volume + RSI hiện tại
-    - Tính xác suất giá tăng > 3% sau T+5
-    
-    Returns:
-        Dict với Probability Score và chi tiết patterns found
-    """
-    # If no historical data provided, simulate
-    is_empty = True
-    if historical_df is not None:
-        if hasattr(historical_df, 'empty'):
-            is_empty = historical_df.empty
-        elif isinstance(historical_df, (list, dict)):
-            is_empty = len(historical_df) == 0
-            
-    if historical_df is None or is_empty:
-        # Simulate pattern matching results
-        # In production, fetch 5-year historical data
-        
-        # Simulated pattern search
-        patterns_found = random.randint(5, 15)
-        patterns_similar_85plus = random.randint(3, min(10, patterns_found))
-        
-        # Simulated win rate from history
-        wins_after_t5 = random.randint(
-            int(patterns_similar_85plus * 0.4), 
-            patterns_similar_85plus
-        )
-        
-        if patterns_similar_85plus > 0:
-            win_probability = (wins_after_t5 / patterns_similar_85plus) * 100
-        else:
-            win_probability = 50  # Neutral if no patterns found
-        
-        return {
-            "patterns_scanned": 1260,  # ~5 years of trading days
-            "patterns_found": patterns_found,
-            "patterns_similar_85plus": patterns_similar_85plus,
-            "wins_after_t5": wins_after_t5,
-            "win_probability": round(win_probability, 1),
-            "methodology": "Cosine Similarity (3-session structure)",
-            "description": f"Đã tìm thấy {patterns_similar_85plus} mẫu hình tương tự trong quá khứ. "
-                          f"{wins_after_t5}/{patterns_similar_85plus} lần ({win_probability:.1f}%) giá tăng > 3% sau T+5.",
-            "confidence": "Medium" if patterns_similar_85plus >= 5 else "Low",
-            "data_source": "Simulated (Cần 5-year historical data)"
-        }
-    
-    # Real implementation with historical data
-    try:
-        # Extract current pattern (last 3 sessions)
-        rsi_val = current_data.get('rsi')
-        if rsi_val is None: rsi_val = 50.0
-        
-        current_pattern = np.array([
-            current_data.get('pct_change_1d', 0) or 0,
-            current_data.get('pct_change_2d', 0) or 0,
-            current_data.get('pct_change_3d', 0) or 0,
-            current_data.get('vol_ratio', 1) or 1,
-            float(rsi_val) / 100.0
-        ]).reshape(1, -1)
-        
-        # Scan historical data for similar patterns
-        patterns_found = 0
-        wins_count = 0
-        
-        # Would implement real cosine similarity here
-        # For now, return simulated results
-        return analyze_pattern_matching(symbol, current_data, None)
-        
-    except Exception as e:
-        print(f"[Audit] Pattern matching error: {e}")
-        return {
-            "patterns_scanned": 0,
-            "patterns_found": 0,
-            "patterns_similar_85plus": 0,
-            "wins_after_t5": 0,
-            "win_probability": 50,
-            "error": str(e),
-            "description": "Không thể phân tích pattern matching do lỗi dữ liệu"
-        }
-
-
-# ============================================
-# MAIN FUNCTION: Generate T+5 Audit Report
-# ============================================
-
+# --- HÀM CHÍNH: TẠO BÁO CÁO T+5 ---
 def generate_t5_audit_report(
     symbol: str,
     price: float,
     volume: int,
-    rsi: Optional[float] = None,
-    ma20: Optional[float] = None,
-    ma50: Optional[float] = None,
-    is_banking: bool = False,
     historical_df: Optional[pd.DataFrame] = None,
-    current_data: Optional[Dict] = None
+    **kwargs
 ) -> Dict[str, Any]:
     """
-    Main function: Sinh báo cáo thẩm định đầu tư T+5.
-    
-    Args:
-        symbol: Mã chứng khoán
-        price: Giá hiện tại
-        volume: Khối lượng giao dịch
-        rsi: Chỉ số RSI
-        ma20: Đường MA20
-        ma50: Đường MA50
-        is_banking: Có phải cổ phiếu ngân hàng không
-        historical_df: DataFrame lịch sử 5 năm (optional)
-        current_data: Dict chứa dữ liệu bổ sung
-    
-    Returns:
-        JSON-structured Dict với đầy đủ báo cáo
+    Sinh báo cáo Quick T+5 theo logic người dùng yêu cầu.
     """
-    audit_time = datetime.now().isoformat()
     
-    # ========== Run 4 Analysis Layers ==========
-    
-    # Layer 1: Technical Analysis
-    technical_result = analyze_technical_layer(
-        price=price,
-        volume=volume,
-        rsi=rsi,
-        ma20=ma20,
-        ma50=ma50,
-        is_banking=is_banking
-    )
-    
-    # Layer 2: Sentiment Analysis
-    sentiment_result = analyze_sentiment_layer(symbol)
-    
-    # Layer 3: Macro Analysis
-    macro_result = analyze_macro_layer()
-    
-    # Layer 4: Pattern Matching
-    if current_data is None:
-        current_data = {
-            'price': price,
-            'volume': volume,
-            'rsi': rsi,
-            'pct_change_1d': 0,
-            'pct_change_2d': 0,
-            'pct_change_3d': 0,
-            'vol_ratio': 1
+    # 0. CHUẨN BỊ DỮ LIỆU
+    if historical_df is None or historical_df.empty:
+        return {
+            "symbol": symbol,
+            "error": "Thiếu dữ liệu lịch sử để phân tích.",
+            "final_decision": {"action": "KHÔNG CÓ DỮ LIỆU", "score": "0/10", "reason": "No Data"}
         }
-    pattern_result = analyze_pattern_matching(symbol, current_data, historical_df)
+
+    df = historical_df.copy()
     
-    # ========== Calculate Overall Score ==========
+    # Chuẩn hóa tên cột
+    col_map = {
+        'time': 'Date', 'date': 'Date',
+        'close': 'Close', 'volume': 'Volume',
+        'open': 'Open', 'high': 'High', 'low': 'Low'
+    }
+    df = df.rename(columns=lambda x: col_map.get(x.lower(), x))
     
-    # Weighted scoring
-    weights = {
-        'technical': 0.30,
-        'sentiment': 0.15,
-        'macro': 0.15,
-        'pattern': 0.40  # Pattern matching most important for T+5
+    # 1. INDICATORS
+    # Tính MA20
+    df['MA20_Price'] = df['Close'].rolling(window=20).mean()
+    df['MA20_Vol'] = df['Volume'].rolling(window=20).mean()
+    
+    # Tính RSI (14)
+    df['RSI'] = calculate_rsi(df['Close'], 14)
+    
+    # Data points
+    if len(df) < 2:
+         return {"symbol": symbol, "error": "History < 2 rows"}
+         
+    current = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    # Prefer arguments if passed (realtime)
+    curr_price = price if price > 0 else current['Close']
+    curr_vol = volume if volume > 0 else current['Volume']
+    curr_rsi = current['RSI']
+    curr_ma20 = current['MA20_Price']
+    curr_ma20_vol = current['MA20_Vol']
+
+    # --- LAYER 1: TECHNICAL CHECK (Bộ lọc 10/10) ---
+    tech_checks = {
+        "price_trend": "TĂNG" if curr_price > curr_ma20 else "GIẢM",
+        "rsi_safe": True if (pd.notna(curr_rsi) and curr_rsi < 70) else False,
+        "vol_pass": True if curr_vol >= 100000 else False
     }
     
-    overall_score = (
-        (technical_result.get('pass_rate', 0) / 100) * 10 * weights['technical'] +
-        (sentiment_result.get('score', 0) / 100) * 10 * weights['sentiment'] +
-        (macro_result.get('score', 0) / 100) * 10 * weights['macro'] +
-        (pattern_result.get('win_probability', 0) / 100) * 10 * weights['pattern']
-    )
+    # --- LAYER 2: MARKET SENTIMENT (Price Action) ---
+    # Logic: Price Change & Vol Ratio
+    # Check division by zero
+    prev_close = prev['Close']
+    if prev_close == 0: prev_close = curr_price # Fail-safe
+
+    price_change = (curr_price - prev_close) / prev_close
     
-    # ========== Determine Decision ==========
-    win_probability = pattern_result.get('win_probability', 50)
+    ma_vol = curr_ma20_vol if pd.notna(curr_ma20_vol) else 1
+    if ma_vol == 0: ma_vol = 1
     
-    if win_probability >= 70 and overall_score >= 7:
-        decision = "MUA MẠNH"
+    vol_ratio = curr_vol / ma_vol
+    
+    sentiment_status = "TRUNG LẬP"
+    sentiment_score = 0
+    sentiment_desc = ""
+
+    if price_change > 0: # Giá Xanh
+        if vol_ratio > 1.2:
+            sentiment_status = "HƯNG PHẤN (DÒNG TIỀN MẠNH)"
+            sentiment_score = 1
+            sentiment_desc = "Giá tăng kèm Vol đột biến (>120% TB20). Cầu vào quyết liệt."
+        elif vol_ratio < 0.8:
+            sentiment_status = "NGHI NGỜ (CẦU YẾU)"
+            sentiment_desc = "Giá tăng nhưng Vol thấp. Cẩn trọng Bull-trap."
+            sentiment_score = 0
+        else:
+            sentiment_status = "TÍCH CỰC"
+            sentiment_score = 0.5
+            sentiment_desc = "Tăng giá ổn định với thanh khoản trung bình."
+    else: # Giá Đỏ
+        if vol_ratio > 1.2:
+            sentiment_status = "SỢ HÃI (BÁN THÁO)"
+            sentiment_score = -1
+            sentiment_desc = "Giá giảm kèm Vol lớn. Áp lực xả hàng mạnh."
+        elif vol_ratio < 0.8:
+            sentiment_status = "TIẾT CUNG (TEST ĐÁY)"
+            sentiment_score = 0.5 
+            sentiment_desc = "Giá giảm nhẹ, Vol cạn kiệt. Không còn ai muốn bán."
+        else:
+            sentiment_status = "TIÊU CỰC"
+            sentiment_score = -0.5
+            sentiment_desc = "Giảm giá thông thường."
+
+    # --- LAYER 3: BACKTEST 60 PHIÊN ---
+    is_above_ma20 = curr_price > curr_ma20
+    
+    similar_days = 0
+    wins = 0
+    match_details = []
+    
+    # Limit to 60 recent sessions
+    limit_scan = 60
+    # Safe checks for start index
+    start_idx = max(20, len(df) - limit_scan - 5)
+    end_idx = len(df) - 5
+    
+    closes = df['Close'].values
+    ma20s = df['MA20_Price'].values
+    dates_arr = df['Date'].values
+    
+    if end_idx > start_idx:
+        for i in range(start_idx, end_idx):
+            if i >= len(closes): break
+            
+            c_i = closes[i]
+            ma_i = ma20s[i]
+            
+            if pd.isna(c_i) or pd.isna(ma_i): continue
+            
+            hist_trend = c_i > ma_i
+            
+            # Trend Similarity Logic
+            if hist_trend == is_above_ma20:
+                similar_days += 1
+                # T+5 Check
+                if i + 5 < len(closes):
+                    c_future = closes[i+5]
+                    # Win if profit > 3%
+                    if c_future > c_i * 1.03:
+                        wins += 1
+                    
+                    # Store details for UI (Last 10 matches or specific relevant ones)
+                    dt_str = str(dates_arr[i])
+                    if 'T' in dt_str: dt_str = dt_str.split('T')[0]
+                    pct = ((c_future - c_i) / c_i) * 100
+                    
+                    match_details.append({
+                        "date": dt_str,
+                        "t0_price": float(f"{c_i:.2f}"),
+                        "t5_price": float(f"{c_future:.2f}"),
+                        "profit_pct": float(f"{pct:.2f}")
+                    })
+
+    win_rate = (wins / similar_days * 100) if similar_days > 0 else 0
+    match_details.reverse() # Newest first
+
+    # --- TỔNG HỢP & RA QUYẾT ĐỊNH ---
+    final_score = 5
+    if tech_checks['rsi_safe']: final_score += 1
+    else: final_score -= 2
+    if tech_checks['vol_pass']: final_score += 1
+    if tech_checks['price_trend'] == "TĂNG": final_score += 1
+    
+    final_score += sentiment_score
+    
+    if win_rate >= 60: final_score += 2
+    elif win_rate < 30: final_score -= 2
+    
+    # Clamp
+    final_score = max(0, min(10, final_score))
+    
+    action = "QUAN SÁT"
+    decision_color = "yellow"
+    if final_score >= 8: 
+        action = "MUA MẠNH"
         decision_color = "green"
-    elif win_probability >= 60 and overall_score >= 6:
-        decision = "MUA THĂM DÒ"
+    elif final_score >= 6: 
+        action = "MUA THĂM DÒ"
         decision_color = "blue"
-    elif win_probability >= 50 and overall_score >= 5:
-        decision = "QUAN SÁT"
-        decision_color = "yellow"
-    else:
-        decision = "KHÔNG THAM GIA"
+    elif final_score <= 4: 
+        action = "BÁN / CƠ CẤU"
         decision_color = "red"
     
-    # ========== Calculate Action Plan ==========
-    stop_loss_pct = 0.05 if win_probability >= 60 else 0.03
-    take_profit_pct = 0.08 if win_probability >= 70 else 0.05
+    # --- OUTPUT JSON DICT ---
+    # Matching User's Request Keys + Extra for safety
     
-    entry_zone = {
-        "min": round(price * 0.98, 0),
-        "max": round(price * 1.01, 0),
-        "description": f"{price * 0.98 / 1000:.2f} - {price * 1.01 / 1000:.2f} (nghìn VND)"
-    }
-    stop_loss = {
-        "price": round(price * (1 - stop_loss_pct), 0),
-        "pct": f"-{stop_loss_pct * 100:.0f}%",
-        "description": f"{price * (1 - stop_loss_pct) / 1000:.2f} (nghìn VND)"
-    }
-    take_profit = {
-        "price": round(price * (1 + take_profit_pct), 0),
-        "pct": f"+{take_profit_pct * 100:.0f}%",
-        "description": f"{price * (1 + take_profit_pct) / 1000:.2f} (nghìn VND)"
-    }
-    
-    # ========== Construct Final Report ==========
     report = {
         "symbol": symbol,
-        "audit_time": audit_time,
-        "overall_score": round(overall_score, 1),
-        "decision": decision,
-        "decision_color": decision_color,
-        "win_probability": f"{win_probability:.1f}%",
-        "win_probability_raw": win_probability,
-        "details": {
-            "technical_status": {
-                "status": technical_result.get('status', 'FAIL'),
-                "pass_rate": f"{technical_result.get('pass_rate', 0)}%",
-                **technical_result.get('checks', {})
-            },
-            "sentiment_analysis": {
-                "score": sentiment_result.get('score', 0),
-                "label": sentiment_result.get('label', 'Neutral'),
-                "trend": sentiment_result.get('trend', 'Neutral'),
-                "news_analyzed": sentiment_result.get('news_analyzed', 0)
-            },
-            "macro_impact": {
-                "assessment": macro_result.get('assessment', 'Neutral'),
-                "label": macro_result.get('label', 'Neutral'),
-                "usd_vnd": macro_result.get('usd_vnd', 0),
-                "interbank_rate": f"{macro_result.get('interbank_rate', 0)}%",
-                "impacts": macro_result.get('impacts', [])
-            },
-            "historical_backtest": {
-                "patterns_found": pattern_result.get('patterns_similar_85plus', 0),
-                "win_rate": f"{pattern_result.get('win_probability', 50):.1f}%",
-                "description": pattern_result.get('description', 'N/A'),
-                "confidence": pattern_result.get('confidence', 'N/A')
-            }
+        "sentiment_analysis": {
+            "status": sentiment_status,
+            "description": sentiment_desc,
+            "score_contribution": f"{sentiment_score:+}",
+            "vol_ratio": f"{vol_ratio:.2f}x"
         },
-        "action_plan": {
-            "entry_zone": entry_zone['description'],
-            "stop_loss": f"{stop_loss['description']} ({stop_loss['pct']})",
-            "take_profit": f"{take_profit['description']} ({take_profit['pct']})",
-            "risk_reward_ratio": f"1:{take_profit_pct / stop_loss_pct:.1f}"
+        "backtest_60_sessions": {
+            "trend_similarity": f"Đã tìm thấy {similar_days} phiên có xu hướng {'TĂNG' if is_above_ma20 else 'GIẢM'} tương tự.",
+            "win_rate_t5": f"{win_rate:.1f}%",
+            "avg_profit_t5": "Win Condition: >3% Profit",  # User template text
+            "conclusion": "Dữ liệu quá khứ ủng hộ kịch bản T+5." if win_rate > 50 else "Dữ liệu quá khứ không ủng hộ.",
+            "match_details": match_details[:10], # Keep detailed list for table
+            "similar_days_found": similar_days,  # For verification scripts
+            "t5_win_rate_raw": win_rate
         },
-        "methodology": {
-            "layers": [
-                "Layer 1: Technical & 10/10 Framework (Weight: 30%)",
-                "Layer 2: Market Sentiment NLP (Weight: 15%)",
-                "Layer 3: Macro Context Check (Weight: 15%)",
-                "Layer 4: Historical Pattern Matching (Weight: 40%)"
-            ],
-            "pattern_algorithm": "Cosine Similarity on 3-session structure",
-            "risk_management": "Xác suất thắng < 60% → Khuyến nghị KHÔNG THAM GIA"
-        }
+        "technical_check": {
+            "price": f"{curr_price}",
+            "rsi": f"{curr_rsi:.1f}",
+            "vol": f"{curr_vol/1000000:.2f}M",
+            "trend": tech_checks['price_trend']
+        },
+        "final_decision": {
+            "score": f"{final_score:.1f}/10",
+            "action": action,
+            "color": decision_color,
+            "reason": f"Winrate quá khứ {win_rate:.0f}% + Tâm lý {sentiment_status}."
+        },
+        # Legacy mappings for generic consumers
+        "overall_score": float(final_score),
+        "win_probability": f"{win_rate:.1f}%",
+        "decision": action,
+        "decision_color": decision_color
     }
     
     return report
 
-
-# ============================================
-# Test Function
-# ============================================
-
 if __name__ == "__main__":
-    # Test with sample data
-    test_report = generate_t5_audit_report(
-        symbol="VSC",
-        price=23300,  # 23.3k
-        volume=2_500_000,
-        rsi=55.3,
-        ma20=22800,
-        ma50=22000,
-        is_banking=False
-    )
-    
-    import json
-    print(json.dumps(test_report, indent=2, ensure_ascii=False))
+    # Mock
+    dates = pd.date_range(end=datetime.now(), periods=80)
+    df_mock = pd.DataFrame({
+        'Date': dates,
+        'Close': np.linspace(20, 25, 80),
+        'Volume': np.random.randint(100000, 2000000, 80)
+    })
+    print(generate_t5_audit_report("TEST", 25.5, 1500000, df_mock))

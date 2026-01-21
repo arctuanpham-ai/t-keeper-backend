@@ -73,11 +73,15 @@ def fetch_ssi_market_data() -> pd.DataFrame:
         
         df = pd.DataFrame(items)
         
-        # Filter chỉ lấy stocks từ sàn chính
+        # Filter 1: Chỉ lấy boardId = MAIN (Bỏ ODD_LOT, BUY_IN)
+        if 'boardId' in df.columns:
+            df = df[df['boardId'] == 'MAIN']
+
+        # Filter 2: Chỉ lấy stocks từ sàn chính
         valid_exchanges = ['hose', 'hnx', 'upcom']
         if 'exchange' in df.columns:
             df = df[df['exchange'].str.lower().isin(valid_exchanges)]
-            print(f"[Scanner] SSI: After filter: {len(df)} stocks")
+            print(f"[Scanner] SSI: After filter (Main & Exchange): {len(df)} stocks")
         
         # Standardize columns
         df = df.rename(columns={
@@ -194,21 +198,136 @@ def fetch_vndirect_market_data() -> pd.DataFrame:
     return combined
 
 
+# ===== Global Cache =====
+MARKET_CACHE = {
+    "data": pd.DataFrame(),
+    "timestamp": 0
+}
+CACHE_TTL = 30 # seconds
+
 def fetch_all_market_data() -> pd.DataFrame:
     """
-    Fetch market data with SSI as primary, VNDirect as fallback
+    Strategy: SSI (Primary) -> VNDirect (Fallback)
+    With Caching to prevent spamming APIs
     """
-    # Try SSI first
+    global MARKET_CACHE
+    
+    # Check cache
+    if not MARKET_CACHE["data"].empty and (time.time() - MARKET_CACHE["timestamp"] < CACHE_TTL):
+        # print("[Scanner] Using cached market data")
+        return MARKET_CACHE["data"]
+
     df = fetch_ssi_market_data()
-    
+    if df.empty:
+        print("[Scanner] SSI failed, switching to VNDirect...")
+        df = fetch_vndirect_market_data()
+        
     if not df.empty:
-        return df
-    
-    # Fallback to VNDirect
-    print("[Scanner] SSI failed, falling back to VNDirect...")
-    return fetch_vndirect_market_data()
+        # Update Cache
+        MARKET_CACHE["data"] = df
+        MARKET_CACHE["timestamp"] = time.time()
+        
+    return df
 
-
+def fetch_stock_data(symbol: str, days: int = 60) -> dict:
+    """
+    Fetch historical data + Realtime update
+    """
+    try:
+        from vnstock import Vnstock
+        client = Vnstock()
+        stock = client.stock(symbol=symbol, source='VCI')
+        
+        # 1. Get History
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+        df = stock.quote.history(start=start_date, end=end_date)
+        
+        if df is None or df.empty:
+            return None
+            
+        # 2. Get Realtime from Cache/Market Scan
+        # This ensures we have the latest tick even if history endpoint is lagged
+        market_df = fetch_all_market_data()
+        
+        latest_data = df.iloc[-1].to_dict() # Default to history
+        
+        if not market_df.empty:
+            realtime_row = market_df[market_df['symbol'] == symbol]
+            if not realtime_row.empty:
+                rt = realtime_row.iloc[0]
+                
+                # Check if we need to append a new row or update the last one
+                # If dataframe last date is today, update. If yesterday, append.
+                last_date_str = str(df.index[-1] if isinstance(df.index, pd.DatetimeIndex) else df['time'].iloc[-1])
+                today_str = datetime.now().strftime('%Y-%m-%d')
+                
+                # SSI returns realtime price/vol
+                # VNStock history is in 1000 VND, SSI is in VND.
+                # Must normalize SSI to match history.
+                rt_price = float(rt['close']) / 1000.0
+                rt_vol = int(rt['volume'])
+                
+                # Update 'latest' dict for immediate use
+                latest_data['close'] = rt_price
+                latest_data['volume'] = rt_vol
+                # Update other fields if needed (High, Low, etc.)
+                
+                # Merge into DF for backtest accuracy
+                # If the last row in DF is NOT today, append new row for "Today"
+                # Note: df['time'] usually holds date in YYYY-mm-dd
+                
+                # Simple logic: Just overwrite/append to ensure backtest sends "Current" correctly
+                # actually generate_t5 uses 'price' and 'volume' arguments for T0.
+                # So mostly we need to ensure 'latest' is correct.
+                # But for 'historical_df' passed to backtest, it's better if it includes today?
+                # The backtest logic excludes last 5 days anyway.
+                # So appending Today is useful for "Trend Similarity" check of T0.
+                
+                # Convert index to datetime for comparison
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    df['time'] = pd.to_datetime(df['time'])
+                    df = df.set_index('time')
+                
+                # Check if the last entry in history is today
+                if df.index[-1].strftime('%Y-%m-%d') == today_str:
+                    # Update today's row
+                    df.loc[df.index[-1], 'close'] = rt_price
+                    df.loc[df.index[-1], 'volume'] = rt_vol
+                    # Optionally update high/low/open if available and relevant
+                    if 'open' in rt and rt['open'] > 0: df.loc[df.index[-1], 'open'] = float(rt['open']) / 1000.0
+                    if 'high' in rt and rt['high'] > 0: df.loc[df.index[-1], 'high'] = float(rt['high']) / 1000.0
+                    if 'low' in rt and rt['low'] > 0: df.loc[df.index[-1], 'low'] = float(rt['low']) / 1000.0
+                else:
+                    # Append a new row for today
+                    rt_open = float(rt.get('open', 0)) / 1000.0 if rt.get('open', 0) > 0 else rt_price
+                    rt_high = float(rt.get('high', 0)) / 1000.0 if rt.get('high', 0) > 0 else rt_price
+                    rt_low = float(rt.get('low', 0)) / 1000.0 if rt.get('low', 0) > 0 else rt_price
+                    
+                    new_row_data = {
+                        'open': rt_open,
+                        'high': rt_high,
+                        'low': rt_low,
+                        'close': rt_price,
+                        'volume': rt_vol,
+                        # Fill other columns with NaN or default values if needed
+                    }
+                    # Ensure all columns match the existing DataFrame
+                    for col in df.columns:
+                        if col not in new_row_data:
+                            new_row_data[col] = np.nan
+                    
+                    new_row_df = pd.DataFrame([new_row_data], index=[pd.to_datetime(today_str)], columns=df.columns)
+                    df = pd.concat([df, new_row_df])
+                
+        return {
+            'df': df,
+            'latest': latest_data,
+            'symbol': symbol
+        }
+    except Exception as e:
+        print(f"[Scanner] Error fetching {symbol}: {e}")
+        return None
 # ==========================================
 # Scoring and Filtering
 # ==========================================
@@ -290,6 +409,10 @@ def apply_filters(df: pd.DataFrame, min_price: int, max_price: int, min_volume: 
     # Volume filter
     df = df[df['volume'] >= min_volume]
     
+    # Symbol filter (Optional, handled by caller if needed, but useful here)
+    if 'symbol' in df.columns and hasattr(df, 'symbol_filter') and df.symbol_filter:
+         df = df[df['symbol'].str.contains(df.symbol_filter, case=False, na=False)]
+
     return df
 
 
@@ -380,8 +503,16 @@ async def scan_market(
     print(f"[Scanner] After filtering: {filtered_count} stocks")
     
     if df.empty:
-        print("[Scanner] No stocks passed filters, returning mock response")
-        return generate_mock_response(top_n)
+        print("[Scanner] No stocks passed filters, returning empty response")
+        return ScannerResponse(
+            success=True,
+            timestamp=datetime.now(),
+            processing_time_ms=0,
+            total_stocks_scanned=total_scanned,
+            qualified_stocks=0,
+            top_stocks=[],
+            message="Không có mã nào thỏa mãn điều kiện lọc."
+        )
     
     # Step 3: Calculate scores
     df = calculate_vectorized_scores(df)
