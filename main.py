@@ -53,8 +53,13 @@ async def root():
     return {
         "status": "ok",
         "service": "T+ Keeper API",
-        "version": "1.0.0"
+        "version": "1.0.1",
+        "message": "Deployment confirmed"
     }
+
+@app.get("/{path:path}")
+async def catch_all(path: str):
+    return {"error": "Not Found", "path": path, "hint": "Check your routes"}
 
 
 @app.get("/health")
